@@ -86,6 +86,8 @@ type Informer interface {
 	HasSynced() bool
 }
 
+type SelectorsByObject map[client.Object]internal.Selector
+
 // Options are the optional arguments for creating a new InformersMap object
 type Options struct {
 	// Scheme is the scheme to use for mapping objects to GroupVersionKinds
@@ -103,6 +105,7 @@ type Options struct {
 	// Namespace restricts the cache's ListWatch to the desired namespace
 	// Default watches all namespaces
 	Namespace string
+	SelectorsByObject SelectorsByObject
 }
 
 var defaultResyncTime = 10 * time.Hour
@@ -113,7 +116,11 @@ func New(config *rest.Config, opts Options) (Cache, error) {
 	if err != nil {
 		return nil, err
 	}
-	im := internal.NewInformersMap(config, opts.Scheme, opts.Mapper, *opts.Resync, opts.Namespace)
+	selectorsByGVK, err := convertToSelectorsByGVK(opts.SelectorsByObject, opts.Scheme)
+	if err != nil {
+		return nil, err
+	}
+	im := internal.NewInformersMap(config, opts.Scheme, opts.Mapper, *opts.Resync, opts.Namespace, selectorsByGVK)
 	return &informerCache{InformersMap: im}, nil
 }
 
@@ -138,4 +145,35 @@ func defaultOpts(config *rest.Config, opts Options) (Options, error) {
 		opts.Resync = &defaultResyncTime
 	}
 	return opts, nil
+}
+
+func BuilderWithOptions(options Options) NewCacheFunc {
+	return func(config *rest.Config, opts Options) (Cache, error) {
+		if opts.Scheme == nil {
+			opts.Scheme = options.Scheme
+		}
+		if opts.Mapper == nil {
+			opts.Mapper = options.Mapper
+		}
+		if opts.Resync == nil {
+			opts.Resync = options.Resync
+		}
+		if opts.Namespace == "" {
+			opts.Namespace = options.Namespace
+		}
+		opts.SelectorsByObject = options.SelectorsByObject
+		return New(config, opts)
+	}
+}
+
+func convertToSelectorsByGVK(selectorsByObject SelectorsByObject, scheme *runtime.Scheme) (internal.SelectorsByGVK, error) {
+	selectorsByGVK := internal.SelectorsByGVK{}
+	for object, selector := range selectorsByObject {
+		gvk, err := apiutil.GVKForObject(object, scheme)
+		if err != nil {
+			return nil, err
+		}
+		selectorsByGVK[gvk] = selector
+	}
+	return selectorsByGVK, nil
 }
